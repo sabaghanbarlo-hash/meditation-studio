@@ -1,0 +1,49 @@
+name: Generate meditation video
+on:
+  push:
+    branches: [main]
+    paths: ["jobs/*.json"]
+  workflow_dispatch:
+    inputs:
+      job_file:
+        description: "Job file to re-run, e.g. jobs/123-my-script.json"
+        required: true
+concurrency:
+  group: render
+  cancel-in-progress: false
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-dejavu-core
+      - run: pip install -r requirements.txt
+      - name: Find job file
+        id: job
+        env:
+          INPUT_JOB: ${{ inputs.job_file }}
+        run: |
+          f="$INPUT_JOB"
+          if [ -z "$f" ]; then f=$(git diff --name-only --diff-filter=AM HEAD^ HEAD -- 'jobs/*.json' | head -1); fi
+          echo "file=$f" >> "$GITHUB_OUTPUT"
+      - name: Build and upload
+        if: steps.job.outputs.file != ''
+        env:
+          YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
+          YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
+          YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python pipeline/generate.py "${{ steps.job.outputs.file }}"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: meditation-video
+          path: out/
+          retention-days: 14

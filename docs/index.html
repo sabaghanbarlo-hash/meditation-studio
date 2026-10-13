@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Meditation Studio</title>
+<style>
+:root{--bg:#f6f4ef;--fg:#23302b;--card:#fff;--ac:#4f7f6a;--bd:#d9d5ca}
+@media(prefers-color-scheme:dark){:root{--bg:#161c1a;--fg:#e8ece9;--card:#1f2825;--ac:#7fb89f;--bd:#34413c}}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 Georgia,serif;padding:16px}
+main{max-width:640px;margin:0 auto}h1{font-weight:500}
+label{display:block;margin:14px 0 4px;font-size:14px;opacity:.8}
+textarea,input,select{width:100%;box-sizing:border-box;padding:10px;border:1px solid var(--bd);border-radius:8px;background:var(--card);color:var(--fg);font:inherit}
+textarea{min-height:240px}.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+button{margin-top:18px;width:100%;padding:14px;border:0;border-radius:10px;background:var(--ac);color:#fff;font:inherit;font-size:17px}
+#msg{margin-top:14px}a{color:var(--ac)}small{opacity:.7}
+</style></head><body><main>
+<h1>Meditation Studio</h1>
+<label>Title (optional)</label><input id="title" placeholder="e.g. 10 Minute Morning Calm">
+<label>Meditation script <small>(blank line = long pause, [pause 10] = 10s)</small></label><textarea id="script"></textarea>
+<div class="row"><div><label>Voice</label><select id="voice"><option value="jenny">Jenny (US, warm)</option><option value="aria">Aria (US)</option><option value="sonia">Sonia (UK)</option><option value="natasha">Natasha (AU)</option><option value="guy">Guy (US, male)</option><option value="ryan">Ryan (UK, male)</option></select></div>
+<div><label>Music</label><select id="music"><option value="calm">Calm pad</option><option value="deep">Deep drone</option><option value="bright">Bright pad</option><option value="ocean">Ocean waves</option></select></div>
+<div><label>Visuals</label><select id="theme"><option value="nature">Nature</option><option value="cosmos">Cosmos</option><option value="ocean">Ocean</option><option value="zen">Zen</option></select></div>
+<div><label>YouTube</label><select id="privacy"><option value="private">Upload as private (review first)</option><option value="unlisted">Upload as unlisted</option><option value="public">Publish public</option><option value="none">Build only, don't upload</option></select></div></div>
+<label>GitHub token <small>(saved only in this browser)</small></label><input id="token" type="password" placeholder="github_pat_...">
+<button onclick="go()">Generate video</button><div id="msg"></div>
+</main><script>
+const REPO="sabaghanbarlo-hash/meditation-studio";
+const $=i=>document.getElementById(i);
+try{$("token").value=localStorage.getItem("gh_token")||""}catch(e){}
+async function go(){
+  const script=$("script").value.trim(),token=$("token").value.trim();
+  if(!script||!token){$("msg").textContent="Add a script and your GitHub token.";return}
+  try{localStorage.setItem("gh_token",token)}catch(e){}
+  const job={title:$("title").value.trim(),script,voice:$("voice").value,music:$("music").value,theme:$("theme").value,privacy:$("privacy").value};
+  const slug=(job.title||"job").toLowerCase().replace(/[^a-z0-9]+/g,"-").slice(0,30);
+  const path=`jobs/${Date.now()}-${slug}.json`;
+  $("msg").textContent="Sending...";
+  const r=await fetch(`https://api.github.com/repos/${REPO}/contents/${path}`,{method:"PUT",headers:{Authorization:"Bearer "+token,Accept:"application/vnd.github+json"},
+    body:JSON.stringify({message:"New job "+path,content:btoa(unescape(encodeURIComponent(JSON.stringify(job,null,1))))})});
+  $("msg").innerHTML=r.ok?`Started. Watch progress in <a href="https://github.com/${REPO}/actions" target="_blank">GitHub Actions</a>. Long scripts take 20-60 min.`:"Failed ("+r.status+"). Check the token has Contents: read/write on this repo.";
+}
+</script></body></html>
