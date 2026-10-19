@@ -5,16 +5,44 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 SR, W, H, FPS = 44100, 1920, 1080, 24
 OUT, TMP = Path("out"), Path("tmp")
+FONTS = Path(__file__).parent / "fonts"
 
-VOICES = {"jenny": "en-US-JennyNeural", "aria": "en-US-AriaNeural", "sonia": "en-GB-SoniaNeural",
-          "natasha": "en-AU-NatashaNeural", "guy": "en-US-GuyNeural", "ryan": "en-GB-RyanNeural"}
-THEMES = {
-    "nature": ["misty mountain lake at dawn", "sunlit forest path", "quiet meadow with wildflowers", "calm river through green hills", "golden hour over rolling hills", "still pond with lotus flowers"],
-    "cosmos": ["soft nebula in deep blue and purple", "starry night sky over a quiet lake", "gentle aurora over snowy hills", "glowing galaxy swirl", "crescent moon above calm clouds", "milky way over desert dunes"],
-    "ocean": ["slow gentle waves at sunrise", "quiet beach at dusk", "turquoise lagoon from above", "moonlit calm sea", "soft surf on pale sand", "sea mist at dawn"],
-    "zen": ["zen garden with raked sand and stones", "bamboo grove with soft light", "candlelit stone altar with incense", "misty japanese temple garden", "smooth stacked stones by water", "paper lanterns glowing softly"],
+# ---------- The Dreamstate brand ----------
+PAL = {"navy": (16, 21, 47), "blue": (32, 44, 91), "indigo": (53, 54, 111), "purple": (98, 81, 143),
+       "lavender": (184, 166, 223), "lilac": (217, 200, 238), "pink": (233, 187, 216),
+       "ivory": (255, 240, 217), "gold": (233, 206, 154)}
+BRAND_STYLE = ("premium cinematic fantasy landscape, celestial midnight-blue sky, deep indigo mountains, luminous lavender clouds, "
+               "subtle blush-pink atmospheric haze, delicate champagne-gold crescent moon, tiny realistic stars, volumetric moonlight, "
+               "soft ethereal mist, elegant composition, rich atmospheric depth, subtle film grain, dreamy emotionally immersive atmosphere, "
+               "sophisticated color grading, high detail, 16:9, no people, no text, no logos")
+
+# Visual journey: opening -> settling in -> main -> deepest moment -> closing (all inside the same dream universe)
+JOURNEY = {
+    "dreamstate": [
+        "crescent moon above a vast lavender cloud sea, midnight blue sky full of stars",
+        "reflective celestial lake between misty indigo mountains, soft moonlight on the water",
+        "quiet moonlit garden path with floating lights, dim lavender mist",
+        "dreamy waterfall falling into a still pool, misty mountain silhouettes, gentle blush clouds",
+        "glowing doorway standing in a calm moonlit lake, golden light spilling over the water",
+        "distant palace among clouds and stars, luminous lavender horizon",
+        "glowing horizon between indigo mountains, soft pink and lavender clouds drifting",
+        "calm midnight ocean under a crescent moon and delicate celestial halo",
+        "peaceful night sky over still reflective water, drifting celestial dust, very dark and quiet",
+    ],
 }
-TINTS = {"nature": (60, 120, 90), "cosmos": (60, 50, 130), "ocean": (40, 110, 140), "zen": (140, 120, 90)}
+THEMES = {
+    "dreamstate": JOURNEY["dreamstate"],
+    "cosmos": ["soft nebula in deep navy and purple", "starry night sky over a quiet lake", "gentle aurora over indigo hills", "glowing galaxy swirl in lavender", "crescent moon above calm clouds", "milky way over a still moonlit sea"],
+    "ocean": ["slow gentle waves under moonlight", "quiet moonlit shore at dusk", "calm midnight sea with lavender haze", "moonlit calm sea", "soft surf on pale sand under stars", "sea mist at twilight"],
+    "nature": ["misty mountain lake at twilight, indigo peaks", "moonlit meadow with soft glowing flowers", "calm river through dark hills under stars", "still pond with glowing lotus flowers at night", "moonlit forest clearing in blue mist", "twilight hills under lavender clouds"],
+    "zen": ["moonlit zen garden with raked sand and stones", "bamboo grove in soft blue moonlight", "candlelit stone altar in night mist", "misty japanese temple garden at twilight", "smooth stacked stones by moonlit water", "paper lanterns glowing softly at night"],
+}
+# per-theme background tint used by the procedural fallback scene
+TINTS = {k: "dreamstate" for k in THEMES}
+
+VOICES = {"ava": "en-US-AvaMultilingualNeural", "emma": "en-US-EmmaMultilingualNeural", "jenny": "en-US-JennyNeural",
+          "aria": "en-US-AriaNeural", "libby": "en-GB-LibbyNeural", "sonia": "en-GB-SoniaNeural",
+          "natasha": "en-AU-NatashaNeural", "guy": "en-US-GuyNeural", "ryan": "en-GB-RyanNeural"}
 
 
 def run(cmd, **kw):
@@ -41,7 +69,9 @@ def silence(sec):
     return np.zeros(int(sec * SR), dtype=np.float32)
 
 
-# ---------- 1. voiceover ----------
+# ---------- 1. voiceover (more human) ----------
+# Whole phrases are spoken in one go so the neural voice keeps natural rhythm and intonation,
+# gaps are slightly varied instead of metronomic, and the voice gets a warm, gentle studio polish.
 def plan(script):
     script = re.sub(r"\[pause\s*(\d+)\s*s?\]", r"\n\n@@\1@@\n\n", script)
     items = []
@@ -50,35 +80,75 @@ def plan(script):
         m = re.fullmatch(r"@@(\d+)@@", para)
         if m:
             items.append(("gap", float(m.group(1)))); continue
-        for s in re.split(r"(?<=[.!?\u2026])\s+", para):
-            if s.strip():
-                items += [("say", s.strip()), ("gap", 1.1)]
-        items.append(("gap", 2.5))
+        sents = [s.strip() for s in re.split(r"(?<=[.!?…])\s+", para) if s.strip()]
+        chunk = ""
+        for s in sents:  # group 2-3 sentences (~260 chars) per synthesis call
+            if chunk and len(chunk) + len(s) > 260:
+                items += [("say", chunk), ("gap", "short")]; chunk = s
+            else:
+                chunk = (chunk + " " + s).strip()
+        if chunk:
+            items.append(("say", chunk))
+        items.append(("gap", "long"))
     return items
+
+
+def gap_len(kind):
+    if kind == "short":
+        return random.uniform(0.7, 1.3)
+    if kind == "long":
+        return random.uniform(2.2, 3.4)
+    return float(kind)
+
+
+def soften(text):
+    # commas/ellipses give the voice natural breathing points
+    text = text.replace("...", "…")
+    return re.sub(r"\s*…\s*", "… ", text).strip()
 
 
 async def synth(text, voice, path):
     import edge_tts
     for attempt in range(4):
         try:
-            await edge_tts.Communicate(text, voice, rate="-18%", pitch="-4Hz").save(str(path)); return
+            await edge_tts.Communicate(soften(text), voice, rate="-12%", pitch="-1Hz").save(str(path)); return
         except Exception as e:
             print("tts retry", attempt, e); await asyncio.sleep(2 + attempt * 3)
     raise RuntimeError("edge-tts failed repeatedly")
 
 
+def trim_and_fade(x, thresh=0.004, fade=0.02):
+    idx = np.where(np.abs(x) > thresh)[0]
+    if len(idx):
+        x = x[max(idx[0] - int(0.05 * SR), 0): idx[-1] + int(0.12 * SR)]
+    f = int(fade * SR)
+    if len(x) > 2 * f:
+        x = x.copy(); x[:f] *= np.linspace(0, 1, f); x[-f:] *= np.linspace(1, 0, f)
+    return x
+
+
+def polish_voice(v):
+    # warm, intimate, slightly "in a quiet room": low rumble cut, soft de-harshing, gentle compression, tiny room reflections
+    write_wav(TMP / "voice_raw.wav", v / max(np.abs(v).max(), 1e-6) * 0.9)
+    ff("-i", TMP / "voice_raw.wav", "-af",
+       "highpass=f=70,equalizer=f=180:t=q:w=1:g=2,equalizer=f=4500:t=q:w=1.5:g=-3,equalizer=f=8000:t=q:w=1:g=-3,"
+       "acompressor=threshold=-22dB:ratio=2.2:attack=20:release=250:makeup=2,aecho=0.85:0.7:45|90:0.10|0.05,loudnorm=I=-18:TP=-2:LRA=7",
+       "-ar", SR, "-ac", 1, TMP / "voice_pol.wav")
+    p = pcm(TMP / "voice_pol.wav")
+    return p / max(np.abs(p).max(), 1e-6) * 0.9
+
+
 async def voiceover(job):
-    voice = VOICES.get(job.get("voice", "jenny"), VOICES["jenny"])
+    voice = VOICES.get(job.get("voice", "ava"), VOICES["ava"])
     parts, n = [silence(3)], 0
     for kind, val in plan(job["script"]):
         if kind == "gap":
-            parts.append(silence(val)); continue
+            parts.append(silence(gap_len(val))); continue
         p = TMP / f"s{n}.mp3"; n += 1
         await synth(val, voice, p)
-        parts.append(pcm(p))
+        parts.append(trim_and_fade(pcm(p)))
     parts.append(silence(6))
-    v = np.concatenate(parts)
-    return v / max(np.abs(v).max(), 1e-6) * 0.9
+    return polish_voice(np.concatenate(parts))
 
 
 # ---------- 2. music (seamless 60s loop, generated) ----------
@@ -103,32 +173,111 @@ def music(kind, total):
     return m
 
 
+def duck(m, voice, depth=0.35):
+    # music dips softly while the voice speaks so the narration always sits on top
+    win = SR // 2
+    env = np.convolve(np.abs(voice), np.ones(win) / win, "same")
+    env = np.convolve(env, np.ones(win) / win, "same")
+    env = np.clip(env / max(env.max(), 1e-6) * 1.6, 0, 1)
+    return m * (1 - depth * env[: len(m)])
+
+
 # ---------- 3. images ----------
-def gradient(theme, seed):
-    rng = np.random.default_rng(seed); base = np.array(TINTS[theme])
-    small = (rng.random((5, 8, 3)) * 0.9 + 0.3) * base
-    img = Image.fromarray(np.clip(small, 0, 255).astype(np.uint8)).resize((W, H), Image.BICUBIC)
-    return img.filter(ImageFilter.GaussianBlur(40))
+def font(name_candidates, size):
+    for p in name_candidates:
+        try: return ImageFont.truetype(str(p), size)
+        except Exception: pass
+    return ImageFont.load_default()
 
 
-def get_image(prompt, theme, seed, path):
-    url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}?width={W}&height={H}&nologo=true&seed={seed}"
+def dream_scene(w, h, seed, focal="moon"):
+    """On-brand procedural dreamscape (used when the image service fails, and as a base for thumbnails)."""
+    rng = np.random.default_rng(seed)
+    y = np.linspace(0, 1, h)[:, None, None]
+    top, mid, low = np.array(PAL["navy"]), np.array(PAL["blue"]), np.array(PAL["indigo"])
+    sky = np.where(y < 0.6, top + (mid - top) * (y / 0.6), mid + (low - mid) * ((y - 0.6) / 0.4))
+    img = Image.fromarray(np.broadcast_to(sky, (h, w, 3)).astype(np.uint8))
+    layer = lambda: Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    # stars
+    st = layer(); sd = ImageDraw.Draw(st)
+    for _ in range(int(w * h / 4500)):
+        x, yy = rng.random() * w, rng.random() ** 1.6 * h * 0.7
+        a = int(60 + rng.random() * 160); r = rng.choice([1, 1, 1, 2])
+        sd.ellipse([x - r, yy - r, x + r, yy + r], fill=(*PAL["ivory"], a))
+    img = Image.alpha_composite(img.convert("RGBA"), st.filter(ImageFilter.GaussianBlur(0.6)))
+    # clouds: soft lavender / blush blobs
+    cl = layer(); cd = ImageDraw.Draw(cl)
+    for i in range(22):
+        cx, cy = rng.random() * w, h * (0.55 + rng.random() * 0.3)
+        rx, ry = w * (0.10 + rng.random() * 0.18), h * (0.03 + rng.random() * 0.06)
+        col = PAL[["lavender", "pink", "purple", "lilac"][i % 4]]
+        cd.ellipse([cx - rx, cy - ry, cx + rx, cy + ry], fill=(*col, int(26 + rng.random() * 36)))
+    img = Image.alpha_composite(img, cl.filter(ImageFilter.GaussianBlur(h * 0.03)))
+    # moon + halo
+    mx, my = w * (0.60 + rng.random() * 0.14), h * (0.17 + rng.random() * 0.04); mr = h * 0.085
+    halo = layer(); hd = ImageDraw.Draw(halo)
+    for k, a in ((6.0, 20), (3.6, 36), (2.0, 60)):
+        hd.ellipse([mx - mr * k, my - mr * k, mx + mr * k, my + mr * k], fill=(*PAL["gold"], a))
+    img = Image.alpha_composite(img, halo.filter(ImageFilter.GaussianBlur(h * 0.05)))
+    moon = layer(); md = ImageDraw.Draw(moon)
+    md.ellipse([mx - mr, my - mr, mx + mr, my + mr], fill=(*PAL["ivory"], 255))
+    md.ellipse([mx - mr * 0.55, my - mr * 1.15, mx + mr * 1.45, my + mr * 0.85], fill=(0, 0, 0, 0))
+    mask = moon.split()[3]
+    cut = Image.new("L", (w, h), 0); ImageDraw.Draw(cut).ellipse([mx - mr * 0.55, my - mr * 1.15, mx + mr * 1.45, my + mr * 0.85], fill=255)
+    moon.putalpha(Image.fromarray(np.clip(np.array(mask).astype(int) - np.array(cut).astype(int), 0, 255).astype(np.uint8)))
+    img = Image.alpha_composite(img, moon)
+    # mountains (3 layers, far to near) + lake reflection glow
+    def ridge(base, amp, col, a):
+        xs = np.arange(w); ys = base * h
+        for f, ph, am in ((1.3, rng.random() * 6, 1.0), (3.1, rng.random() * 6, 0.45), (7.0, rng.random() * 6, 0.15)):
+            ys = ys - np.sin(xs / w * 2 * np.pi * f + ph) * amp * h * am
+        pl = layer(); ImageDraw.Draw(pl).polygon([(0, h)] + list(zip(xs.tolist(), ys.tolist())) + [(w, h)], fill=(*col, a))
+        return pl.filter(ImageFilter.GaussianBlur(1.2))
+    for base, amp, col, a in ((0.66, 0.05, PAL["purple"], 150), (0.72, 0.06, PAL["indigo"], 210), (0.80, 0.05, PAL["navy"], 255)):
+        img = Image.alpha_composite(img, ridge(base, amp, col, a))
+    glow = layer(); gd = ImageDraw.Draw(glow)
+    gd.ellipse([mx - w * 0.05, h * 0.82, mx + w * 0.05, h * 0.98], fill=(*PAL["gold"], 60))
+    img = Image.alpha_composite(img, glow.filter(ImageFilter.GaussianBlur(h * 0.03)))
+    img = img.convert("RGB")
+    grain = (rng.normal(0, 3.5, (h, w, 1))).astype(np.float32)
+    return Image.fromarray(np.clip(np.array(img).astype(np.float32) + grain, 0, 255).astype(np.uint8))
+
+
+def fetch(prompt, w, h, seed, path):
+    url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}?width={w}&height={h}&nologo=true&seed={seed}"
     for attempt in range(3):
         try:
             data = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=90).read()
-            img = Image.open(io.BytesIO(data)).convert("RGB").resize((W, H)); img.save(path, quality=92); return
+            img = Image.open(io.BytesIO(data)).convert("RGB").resize((w, h), Image.LANCZOS); img.save(path, quality=93); return img
         except Exception as e:
             print("image retry", attempt, e); import time; time.sleep(5 + attempt * 5)
-    print("using gradient fallback"); gradient(theme, seed).save(path, quality=92)
+    return None
+
+
+def get_image(subject, seed, path):
+    img = fetch(f"{subject}, {BRAND_STYLE}", W, H, seed, path)
+    if img is None:
+        print("using on-brand procedural fallback"); dream_scene(W, H, seed).save(path, quality=93)
+
+
+def grade(img):
+    # pull every image toward the Dreamstate palette (soft navy shadows, lavender highlights, no harsh contrast)
+    a = np.asarray(img.convert("RGB")).astype(np.float32) / 255
+    lum = a.mean(2, keepdims=True)
+    shadow, high = np.array(PAL["navy"]) / 255, np.array(PAL["lilac"]) / 255
+    toned = shadow + (high - shadow) * lum
+    out = a * 0.62 + toned * 0.38
+    out = np.clip((out - 0.5) * 0.94 + 0.5 + 0.01, 0, 1)
+    return Image.fromarray((out * 255).astype(np.uint8))
 
 
 # ---------- 4. video ----------
 def build_video(images, dur, audio, out):
     d = dur / len(images); frames = round(d * FPS); clips = []
     for i, img in enumerate(images):
-        z = f"1+0.15*on/{frames}" if i % 2 == 0 else f"1.15-0.15*on/{frames}"
+        z = f"1+0.10*on/{frames}" if i % 2 == 0 else f"1.10-0.10*on/{frames}"  # slow, almost imperceptible push/pull
         vf = (f"scale=3840:-2,zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d={frames}:s={W}x{H}:fps={FPS},"
-              f"fade=t=in:st=0:d=2,fade=t=out:st={d-2:.2f}:d=2,format=yuv420p")
+              f"fade=t=in:st=0:d=3,fade=t=out:st={d-3:.2f}:d=3,format=yuv420p")
         c = TMP / f"clip{i}.mp4"
         ff("-i", img, "-vf", vf, "-frames:v", frames, "-c:v", "libx264", "-preset", "veryfast", "-crf", "24", c)
         clips.append(c)
@@ -136,22 +285,108 @@ def build_video(images, dur, audio, out):
     ff("-f", "concat", "-safe", "0", "-i", lst, "-i", audio, "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-shortest", "-movflags", "+faststart", out)
 
 
-# ---------- 5. thumbnail ----------
-def thumbnail(img_path, title, out):
-    img = Image.open(img_path).convert("RGB").resize((1280, 720))
-    img = Image.blend(img, Image.new("RGB", img.size, (0, 0, 0)), 0.42)
-    d = ImageDraw.Draw(img); words, lines, cur = title.upper().split(), [], ""
-    for w in words:
-        if len(cur) + len(w) > 16 and cur: lines.append(cur); cur = w
-        else: cur = (cur + " " + w).strip()
-    lines.append(cur); lines = lines[:3]
-    try: font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf", 110 if len(lines) < 3 else 90)
-    except Exception: font = ImageFont.load_default()
-    lh = 130 if len(lines) < 3 else 108; y = (720 - lh * len(lines)) // 2
+# ---------- 5. thumbnail (The Dreamstate design system, 1280x720) ----------
+def ensure_fonts():
+    FONTS.mkdir(exist_ok=True)
+    src = {"CormorantGaramond-Bold.ttf": "https://github.com/google/fonts/raw/main/ofl/cormorantgaramond/CormorantGaramond%5Bwght%5D.ttf",
+           "Jost.ttf": "https://github.com/google/fonts/raw/main/ofl/jost/Jost%5Bwght%5D.ttf"}
+    for name, url in src.items():
+        p = FONTS / name
+        if not p.exists():
+            try:
+                p.write_bytes(urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=30).read())
+            except Exception as e:
+                print("font download failed (using fallback):", name, e)
+    serif = [FONTS / "CormorantGaramond-Bold.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf"]
+    sans = [FONTS / "Jost.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
+    return serif, sans
+
+
+def headline_for(job, title):
+    """Short, emotional 2-6 word headline for the thumbnail."""
+    if job.get("thumbnail_text"):
+        return job["thumbnail_text"].strip().upper()
+    t = re.sub(r"\b\d+[- ]?(minute|min|hour|hr)s?\b", "", title or "", flags=re.I)
+    t = re.sub(r"\b(guided|meditation|for beginners|\| ?guided meditation)\b", "", t, flags=re.I)
+    t = " ".join(t.replace("|", " ").replace(":", " ").split())
+    words = t.split()
+    if len(words) > 6:
+        words = words[:6]
+    if len(words) < 2:
+        script = job.get("script", "").lower()
+        for key, txt in (("sleep", "LET GO & SLEEP"), ("anx", "YOU ARE SAFE HERE"), ("future", "MEET YOUR FUTURE SELF"),
+                         ("manifest", "STEP INTO YOUR DREAM LIFE"), ("affirm", "I AM ENOUGH")):
+            if key in script:
+                return txt
+        return "A PEACEFUL MIND"
+    return " ".join(words).upper()
+
+
+def wrap(d, text, fnt, maxw):
+    lines, cur = [], ""
+    for w in text.split():
+        test = (cur + " " + w).strip()
+        if d.textlength(test, font=fnt) <= maxw or not cur: cur = test
+        else: lines.append(cur); cur = w
+    lines.append(cur)
+    return lines
+
+
+def thumbnail(base_img, headline, out, seed=1, regrade=True):
+    TW, TH = 1280, 720
+    serif, sans = ensure_fonts()
+    img = base_img.convert("RGB").resize((TW, TH), Image.LANCZOS)
+    img = (grade(img) if regrade else img).convert("RGBA")
+    # soft vignette + lower-centre darkening so the headline always has strong contrast
+    yy, xx = np.mgrid[0:TH, 0:TW]
+    vig = np.clip(((xx - TW / 2) / (TW * 0.75)) ** 2 + ((yy - TH / 2) / (TH * 0.8)) ** 2, 0, 1)
+    shade = np.clip(0.30 * vig + 0.30 * np.exp(-((yy - TH * 0.55) / (TH * 0.28)) ** 2), 0, 0.65)
+    ov = np.zeros((TH, TW, 4), np.uint8); ov[..., :3] = PAL["navy"]; ov[..., 3] = (shade * 255).astype(np.uint8)
+    img = Image.alpha_composite(img, Image.fromarray(ov))
+    # headline (kept inside a safe margin, away from the edges)
+    d = ImageDraw.Draw(img)
+    size = 118
+    while size > 60:
+        f = font(serif, size); lines = wrap(d, headline, f, TW - 380)
+        if len(lines) <= 3 and max(d.textlength(l, font=f) for l in lines) <= TW - 380: break
+        size -= 6
+    lh = int(size * 1.08); total = lh * len(lines)
+    y0 = int(TH * 0.60 - total / 2)
+    glow = Image.new("RGBA", (TW, TH), (0, 0, 0, 0)); gd = ImageDraw.Draw(glow)
+    shadow = Image.new("RGBA", (TW, TH), (0, 0, 0, 0)); sd = ImageDraw.Draw(shadow)
+    y = y0
     for ln in lines:
-        x = (1280 - d.textlength(ln, font=font)) / 2
-        d.text((x + 4, y + 4), ln, font=font, fill=(0, 0, 0)); d.text((x, y), ln, font=font, fill=(255, 255, 255)); y += lh
-    img.save(out, quality=90)
+        x = (TW - d.textlength(ln, font=f)) / 2
+        gd.text((x, y), ln, font=f, fill=(*PAL["lavender"], 150))
+        sd.text((x + 3, y + 5), ln, font=f, fill=(*PAL["navy"], 230))
+        y += lh
+    img = Image.alpha_composite(img, shadow.filter(ImageFilter.GaussianBlur(7)))
+    img = Image.alpha_composite(img, glow.filter(ImageFilter.GaussianBlur(14)))
+    d = ImageDraw.Draw(img); y = y0
+    for ln in lines:
+        x = (TW - d.textlength(ln, font=f)) / 2
+        d.text((x, y), ln, font=f, fill=PAL["ivory"]); y += lh
+    # delicate gold rule + brand line
+    ry = y0 + total + 14
+    d.line([(TW / 2 - 70, ry), (TW / 2 + 70, ry)], fill=(*PAL["gold"], 255), width=2)
+    bf = font(sans, 30); brand = "T H E   D R E A M S T A T E"
+    d.text(((TW - d.textlength(brand, font=bf)) / 2, ry + 18), brand, font=bf, fill=PAL["gold"])
+    img.convert("RGB").save(out, quality=93, optimize=True)
+
+
+def make_thumbnail(job, title, fallback_img, out, seed):
+    """Dedicated thumbnail artwork (single clear focal point), not just a darkened video frame."""
+    subject = job.get("thumbnail_prompt") or random.choice(
+        ["a glowing crescent moon over a lavender cloud sea, single clear focal point, open dark space in the lower centre",
+         "a golden doorway glowing in a calm reflective moonlit lake, single clear focal point, open dark space in the lower centre",
+         "a luminous horizon between indigo mountains under a crescent moon, single clear focal point, open dark space in the lower centre"])
+    path = TMP / "thumb_base.jpg"
+    base = fetch(f"{subject}, {BRAND_STYLE}", 1280, 720, seed, path); real = base is not None
+    if base is None:
+        base = dream_scene(1280, 720, seed) if fallback_img is None else Image.open(fallback_img)
+    headline = headline_for(job, title)
+    thumbnail(base, headline, out, seed, regrade=real)
+    print("Thumbnail headline:", headline)
 
 
 # ---------- 6. metadata ----------
@@ -159,15 +394,16 @@ def metadata(job):
     script = " ".join(job["script"].split()); script = re.sub(r"\[pause[^\]]*\]", "", script)
     first = re.split(r"(?<=[.!?])\s+", script)[:2]
     title = (job.get("title") or first[0])[:70].strip(" .")
-    tags = ["guided meditation", "meditation", "relaxation", "mindfulness", "stress relief", "calm", "sleep meditation", "inner peace"]
+    tags = ["guided meditation", "meditation", "relaxation", "mindfulness", "stress relief", "calm", "sleep meditation", "inner peace", "the dreamstate"]
     meta = {"title": f"{title} | Guided Meditation"[:100],
-            "description": " ".join(first) + "\n\nFind a comfortable position, press play, and let yourself relax.\n\nVoice and visuals in this video are AI-generated.\n\n#meditation #mindfulness #relaxation #guidedmeditation",
+            "description": " ".join(first) + "\n\nFind a comfortable position, press play, and let yourself relax.\n\nThe Dreamstate — Enter the life you imagine.\n\nVoice and visuals in this video are AI-generated.\n\n#meditation #mindfulness #relaxation #guidedmeditation",
             "tags": tags}
     key = os.getenv("GEMINI_API_KEY")
     if key:
         try:
-            prompt = ("Write YouTube metadata for this guided meditation script. Return JSON only with keys title (max 70 chars, calm and searchable), "
-                      "description (150-250 words, ends with 4-6 hashtags), tags (list of 10-15 short strings).\n\nSCRIPT:\n" + script[:6000])
+            prompt = ("Write YouTube metadata for this guided meditation script for the channel 'The Dreamstate' (tagline: Enter the life you imagine). "
+                      "Return JSON only with keys title (max 70 chars, calm, accurate and searchable), description (150-250 words, no unrealistic promises, ends with 4-6 hashtags), "
+                      "tags (list of 10-15 short strings, no keyword stuffing).\n\nSCRIPT:\n" + script[:6000])
             body = json.dumps({"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"responseMimeType": "application/json"}}).encode()
             model = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
             req = urllib.request.Request(f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}", body, {"Content-Type": "application/json"})
@@ -212,15 +448,18 @@ def upload(video, thumb, meta, privacy):
 def main(jobfile):
     job = json.load(open(jobfile)); OUT.mkdir(exist_ok=True); TMP.mkdir(exist_ok=True)
     voice = asyncio.run(voiceover(job)); dur = len(voice) / SR
-    mix = voice + music(job.get("music", "calm"), dur); write_wav(TMP / "mix.wav", np.clip(mix, -1, 1))
+    mix = voice + duck(music(job.get("music", "calm"), dur), voice); write_wav(TMP / "mix.wav", np.clip(mix, -1, 1))
     print(f"audio {dur/60:.1f} min")
-    theme = job.get("theme", "nature") if job.get("theme") in THEMES else "nature"
+    theme = job.get("theme") if job.get("theme") in THEMES else "dreamstate"
     n = max(3, min(24, round(dur / 75))); subjects = THEMES[theme]; imgs = []
     for i in range(n):
         p = TMP / f"img{i}.jpg"; seed = random.randint(1, 10**6)
-        get_image(f"{subjects[i % len(subjects)]}, peaceful, soft light, no people, no text, cinematic, highly detailed", theme, seed, p); imgs.append(p)
+        # spread the scenes across the emotional arc: opening ... deepest moment ... quiet close
+        subj = subjects[min(int(i / max(n - 1, 1) * (len(subjects) - 1)), len(subjects) - 1)] if n <= len(subjects) else subjects[i % len(subjects)]
+        get_image(subj, seed, p); grade(Image.open(p)).save(p, quality=93); imgs.append(p)
     build_video(imgs, dur, TMP / "mix.wav", OUT / "final.mp4")
-    meta = metadata(job); thumbnail(imgs[0], job.get("title") or meta["title"].split(" | ")[0], OUT / "thumbnail.jpg")
+    meta = metadata(job)
+    make_thumbnail(job, job.get("title") or meta["title"].split(" | ")[0], imgs[0], OUT / "thumbnail.jpg", random.randint(1, 10**6))
     (OUT / "metadata.json").write_text(json.dumps(meta, indent=1))
     upload(OUT / "final.mp4", OUT / "thumbnail.jpg", meta, job.get("privacy", "private"))
 
