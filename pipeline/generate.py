@@ -2,6 +2,8 @@ import asyncio, json, os, random, re, subprocess, sys, urllib.parse, urllib.requ
 from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
+sys.path.insert(0, str(Path(__file__).parent))
+import dreamscape
 
 SR, W, H, FPS = 44100, 1920, 1080, 24
 OUT, TMP = Path("out"), Path("tmp")
@@ -190,74 +192,43 @@ def font(name_candidates, size):
     return ImageFont.load_default()
 
 
-def dream_scene(w, h, seed, focal="moon"):
-    """On-brand procedural dreamscape (used when the image service fails, and as a base for thumbnails)."""
-    rng = np.random.default_rng(seed)
-    y = np.linspace(0, 1, h)[:, None, None]
-    top, mid, low = np.array(PAL["navy"]), np.array(PAL["blue"]), np.array(PAL["indigo"])
-    sky = np.where(y < 0.6, top + (mid - top) * (y / 0.6), mid + (low - mid) * ((y - 0.6) / 0.4))
-    img = Image.fromarray(np.broadcast_to(sky, (h, w, 3)).astype(np.uint8))
-    layer = lambda: Image.new("RGBA", (w, h), (0, 0, 0, 0))
-    # stars
-    st = layer(); sd = ImageDraw.Draw(st)
-    for _ in range(int(w * h / 4500)):
-        x, yy = rng.random() * w, rng.random() ** 1.6 * h * 0.7
-        a = int(60 + rng.random() * 160); r = rng.choice([1, 1, 1, 2])
-        sd.ellipse([x - r, yy - r, x + r, yy + r], fill=(*PAL["ivory"], a))
-    img = Image.alpha_composite(img.convert("RGBA"), st.filter(ImageFilter.GaussianBlur(0.6)))
-    # clouds: soft lavender / blush blobs
-    cl = layer(); cd = ImageDraw.Draw(cl)
-    for i in range(22):
-        cx, cy = rng.random() * w, h * (0.55 + rng.random() * 0.3)
-        rx, ry = w * (0.10 + rng.random() * 0.18), h * (0.03 + rng.random() * 0.06)
-        col = PAL[["lavender", "pink", "purple", "lilac"][i % 4]]
-        cd.ellipse([cx - rx, cy - ry, cx + rx, cy + ry], fill=(*col, int(26 + rng.random() * 36)))
-    img = Image.alpha_composite(img, cl.filter(ImageFilter.GaussianBlur(h * 0.03)))
-    # moon + halo
-    mx, my = w * (0.60 + rng.random() * 0.14), h * (0.17 + rng.random() * 0.04); mr = h * 0.085
-    halo = layer(); hd = ImageDraw.Draw(halo)
-    for k, a in ((6.0, 20), (3.6, 36), (2.0, 60)):
-        hd.ellipse([mx - mr * k, my - mr * k, mx + mr * k, my + mr * k], fill=(*PAL["gold"], a))
-    img = Image.alpha_composite(img, halo.filter(ImageFilter.GaussianBlur(h * 0.05)))
-    moon = layer(); md = ImageDraw.Draw(moon)
-    md.ellipse([mx - mr, my - mr, mx + mr, my + mr], fill=(*PAL["ivory"], 255))
-    md.ellipse([mx - mr * 0.55, my - mr * 1.15, mx + mr * 1.45, my + mr * 0.85], fill=(0, 0, 0, 0))
-    mask = moon.split()[3]
-    cut = Image.new("L", (w, h), 0); ImageDraw.Draw(cut).ellipse([mx - mr * 0.55, my - mr * 1.15, mx + mr * 1.45, my + mr * 0.85], fill=255)
-    moon.putalpha(Image.fromarray(np.clip(np.array(mask).astype(int) - np.array(cut).astype(int), 0, 255).astype(np.uint8)))
-    img = Image.alpha_composite(img, moon)
-    # mountains (3 layers, far to near) + lake reflection glow
-    def ridge(base, amp, col, a):
-        xs = np.arange(w); ys = base * h
-        for f, ph, am in ((1.3, rng.random() * 6, 1.0), (3.1, rng.random() * 6, 0.45), (7.0, rng.random() * 6, 0.15)):
-            ys = ys - np.sin(xs / w * 2 * np.pi * f + ph) * amp * h * am
-        pl = layer(); ImageDraw.Draw(pl).polygon([(0, h)] + list(zip(xs.tolist(), ys.tolist())) + [(w, h)], fill=(*col, a))
-        return pl.filter(ImageFilter.GaussianBlur(1.2))
-    for base, amp, col, a in ((0.66, 0.05, PAL["purple"], 150), (0.72, 0.06, PAL["indigo"], 210), (0.80, 0.05, PAL["navy"], 255)):
-        img = Image.alpha_composite(img, ridge(base, amp, col, a))
-    glow = layer(); gd = ImageDraw.Draw(glow)
-    gd.ellipse([mx - w * 0.05, h * 0.82, mx + w * 0.05, h * 0.98], fill=(*PAL["gold"], 60))
-    img = Image.alpha_composite(img, glow.filter(ImageFilter.GaussianBlur(h * 0.03)))
-    img = img.convert("RGB")
-    grain = (rng.normal(0, 3.5, (h, w, 1))).astype(np.float32)
-    return Image.fromarray(np.clip(np.array(img).astype(np.float32) + grain, 0, 255).astype(np.uint8))
+FOCALS = ["moon", "horizon", "door"]
+
+
+def dream_scene(w, h, seed, focal="moon", sleep=False):
+    return dreamscape.render(w, h, seed, focal, sleep)
+
+
+REMOTE_OK = True  # flips to False after a hard failure (e.g. 402 Payment Required) so we stop wasting time
 
 
 def fetch(prompt, w, h, seed, path):
+    global REMOTE_OK
+    if not REMOTE_OK:
+        return None
     url = f"https://image.pollinations.ai/prompt/{urllib.parse.quote(prompt)}?width={w}&height={h}&nologo=true&seed={seed}"
-    for attempt in range(3):
+    for attempt in range(2):
         try:
-            data = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=90).read()
+            data = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"}), timeout=60).read()
             img = Image.open(io.BytesIO(data)).convert("RGB").resize((w, h), Image.LANCZOS); img.save(path, quality=93); return img
+        except urllib.error.HTTPError as e:
+            print("image service refused:", e)
+            if e.code in (401, 402, 403, 429):
+                REMOTE_OK = False; print("AI image service unavailable - using the built-in Dreamstate scenes for the rest of this run"); return None
         except Exception as e:
-            print("image retry", attempt, e); import time; time.sleep(5 + attempt * 5)
+            print("image retry", attempt, e)
+    REMOTE_OK = False
     return None
 
 
-def get_image(subject, seed, path):
+def get_image(subject, seed, path, idx=0, n=1, sleep=False):
     img = fetch(f"{subject}, {BRAND_STYLE}", W, H, seed, path)
     if img is None:
-        print("using on-brand procedural fallback"); dream_scene(W, H, seed).save(path, quality=93)
+        # opening = moon, deepest moment (about 60% through) = glowing doorway, the rest = horizons / moon
+        focal = "door" if n >= 3 and idx == round((n - 1) * 0.6) else ("moon" if idx % 2 == 0 else "horizon")
+        dream_scene(W, H, seed + idx * 101, focal, sleep).save(path, quality=93)
+        return False
+    return True
 
 
 def grade(img):
@@ -314,8 +285,9 @@ def headline_for(job, title):
         words = words[:6]
     if len(words) < 2:
         script = job.get("script", "").lower()
-        for key, txt in (("sleep", "LET GO & SLEEP"), ("anx", "YOU ARE SAFE HERE"), ("future", "MEET YOUR FUTURE SELF"),
-                         ("manifest", "STEP INTO YOUR DREAM LIFE"), ("affirm", "I AM ENOUGH")):
+        for key, txt in (("sleep", "LET GO & SLEEP"), ("anx", "YOU ARE SAFE HERE"), ("future self", "MEET YOUR FUTURE SELF"),
+                         ("manifest", "STEP INTO YOUR DREAM LIFE"), ("affirm", "I AM ENOUGH"), ("gratitude", "A GRATEFUL HEART"),
+                         ("worr", "RELEASE THE WEIGHT"), ("stress", "BREATHE & LET GO"), ("breath", "JUST BREATHE")):
             if key in script:
                 return txt
         return "A PEACEFUL MIND"
@@ -340,18 +312,18 @@ def thumbnail(base_img, headline, out, seed=1, regrade=True):
     # soft vignette + lower-centre darkening so the headline always has strong contrast
     yy, xx = np.mgrid[0:TH, 0:TW]
     vig = np.clip(((xx - TW / 2) / (TW * 0.75)) ** 2 + ((yy - TH / 2) / (TH * 0.8)) ** 2, 0, 1)
-    shade = np.clip(0.30 * vig + 0.30 * np.exp(-((yy - TH * 0.55) / (TH * 0.28)) ** 2), 0, 0.65)
+    shade = np.clip(0.18 * vig + 0.34 * np.exp(-((yy - TH * 0.78) / (TH * 0.20)) ** 2), 0, 0.62)
     ov = np.zeros((TH, TW, 4), np.uint8); ov[..., :3] = PAL["navy"]; ov[..., 3] = (shade * 255).astype(np.uint8)
     img = Image.alpha_composite(img, Image.fromarray(ov))
     # headline (kept inside a safe margin, away from the edges)
     d = ImageDraw.Draw(img)
-    size = 118
-    while size > 60:
-        f = font(serif, size); lines = wrap(d, headline, f, TW - 380)
-        if len(lines) <= 3 and max(d.textlength(l, font=f) for l in lines) <= TW - 380: break
-        size -= 6
+    size = 98
+    while size > 56:
+        f = font(serif, size); lines = wrap(d, headline, f, TW - 220)
+        if len(lines) <= 2 and max(d.textlength(l, font=f) for l in lines) <= TW - 220: break
+        size -= 4
     lh = int(size * 1.08); total = lh * len(lines)
-    y0 = int(TH * 0.60 - total / 2)
+    y0 = int(TH * 0.705 - total / 2 - 14)
     glow = Image.new("RGBA", (TW, TH), (0, 0, 0, 0)); gd = ImageDraw.Draw(glow)
     shadow = Image.new("RGBA", (TW, TH), (0, 0, 0, 0)); sd = ImageDraw.Draw(shadow)
     y = y0
@@ -367,26 +339,25 @@ def thumbnail(base_img, headline, out, seed=1, regrade=True):
         x = (TW - d.textlength(ln, font=f)) / 2
         d.text((x, y), ln, font=f, fill=PAL["ivory"]); y += lh
     # delicate gold rule + brand line
-    ry = y0 + total + 14
+    ry = y0 + total + 12
     d.line([(TW / 2 - 70, ry), (TW / 2 + 70, ry)], fill=(*PAL["gold"], 255), width=2)
-    bf = font(sans, 30); brand = "T H E   D R E A M S T A T E"
+    bf = font(sans, 26); brand = "T H E   D R E A M S T A T E"
     d.text(((TW - d.textlength(brand, font=bf)) / 2, ry + 18), brand, font=bf, fill=PAL["gold"])
     img.convert("RGB").save(out, quality=93, optimize=True)
 
 
 def make_thumbnail(job, title, fallback_img, out, seed):
-    """Dedicated thumbnail artwork (single clear focal point), not just a darkened video frame."""
-    subject = job.get("thumbnail_prompt") or random.choice(
-        ["a glowing crescent moon over a lavender cloud sea, single clear focal point, open dark space in the lower centre",
-         "a golden doorway glowing in a calm reflective moonlit lake, single clear focal point, open dark space in the lower centre",
-         "a luminous horizon between indigo mountains under a crescent moon, single clear focal point, open dark space in the lower centre"])
-    path = TMP / "thumb_base.jpg"
-    base = fetch(f"{subject}, {BRAND_STYLE}", 1280, 720, seed, path); real = base is not None
+    """Dedicated thumbnail artwork with one clear focal point. Uses the built-in Dreamstate renderer (always works,
+    always on-brand). Set "thumbnail_prompt" in the job file to try an AI image instead."""
+    focal = job.get("thumbnail_focal") if job.get("thumbnail_focal") in FOCALS else random.choice(FOCALS)
+    base, real = None, False
+    if job.get("thumbnail_prompt"):
+        base = fetch(f"{job['thumbnail_prompt']}, {BRAND_STYLE}", 1280, 720, seed, TMP / "thumb_base.jpg"); real = base is not None
     if base is None:
-        base = dream_scene(1280, 720, seed) if fallback_img is None else Image.open(fallback_img)
+        base = dream_scene(1280, 720, seed, focal)
     headline = headline_for(job, title)
     thumbnail(base, headline, out, seed, regrade=real)
-    print("Thumbnail headline:", headline)
+    print("Thumbnail focal:", focal, "| headline:", headline)
 
 
 # ---------- 6. metadata ----------
@@ -456,10 +427,12 @@ def main(jobfile):
         p = TMP / f"img{i}.jpg"; seed = random.randint(1, 10**6)
         # spread the scenes across the emotional arc: opening ... deepest moment ... quiet close
         subj = subjects[min(int(i / max(n - 1, 1) * (len(subjects) - 1)), len(subjects) - 1)] if n <= len(subjects) else subjects[i % len(subjects)]
-        get_image(subj, seed, p); grade(Image.open(p)).save(p, quality=93); imgs.append(p)
+        ai = get_image(subj, seed, p, i, n, theme == "dreamstate" and job.get("sleep", False))
+        if ai: grade(Image.open(p)).save(p, quality=93)
+        imgs.append(p)
     build_video(imgs, dur, TMP / "mix.wav", OUT / "final.mp4")
     meta = metadata(job)
-    make_thumbnail(job, job.get("title") or meta["title"].split(" | ")[0], imgs[0], OUT / "thumbnail.jpg", random.randint(1, 10**6))
+    make_thumbnail(job, job.get("title") or (meta["title"].split(" | ")[0] if os.getenv("GEMINI_API_KEY") else ""), imgs[0], OUT / "thumbnail.jpg", random.randint(1, 10**6))
     (OUT / "metadata.json").write_text(json.dumps(meta, indent=1))
     upload(OUT / "final.mp4", OUT / "thumbnail.jpg", meta, job.get("privacy", "private"))
 
