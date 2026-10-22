@@ -33,17 +33,18 @@ jobs:
           f="$INPUT_JOB"
           if [ -z "$f" ]; then f=$(git diff --name-only --diff-filter=AM HEAD^ HEAD -- 'jobs/*.json' | head -1); fi
           echo "file=$f" >> "$GITHUB_OUTPUT"
-      - name: Build and upload
+      - name: Build and upload (animated scenes)
         if: steps.job.outputs.file != ''
         env:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: python pipeline/generate.py "${{ steps.job.outputs.file }}"
+        run: python pipeline/generate_animated.py "${{ steps.job.outputs.file }}"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: meditation-video
           path: out/
           retention-days: 14
+          
