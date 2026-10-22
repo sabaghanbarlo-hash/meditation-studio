@@ -1,0 +1,8 @@
+{
+ "title": "Animation test",
+ "script": "Take a slow, deep breath in, and gently let it go.\n\n[pause 8s]\n\nFeel your shoulders soften. Let your hands rest.\n\n[pause 10s]\n\nThere is nowhere else you need to be.\n\n[pause 10s]\n\nBreathe in peace, and breathe out tension.\n\n[pause 10s]\n\nRest here for as long as you like.",
+ "voice": "ava",
+ "music": "calm",
+ "theme": "dreamstate",
+ "privacy": "none"
+}
